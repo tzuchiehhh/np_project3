@@ -1,19 +1,21 @@
+#include <boost/asio.hpp>
+#include <boost/filesystem.hpp>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
-#include <utility>
-#include <boost/asio.hpp>
-#include <boost/filesystem.hpp>
-#include <string>
-#include <string.h>
+#include <regex>
+#include <sstream>
 #include <stdlib.h>
+#include <string.h>
+#include <string>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <sstream>
-#include <regex>
+#include <utility>
 
 using boost::asio::ip::tcp;
 using namespace std;
+
+boost::asio::io_context io_context;
 
 class session
     : public std::enable_shared_from_this<session> {
@@ -30,7 +32,7 @@ private:
     tcp::socket socket_;
     enum { max_length = 1024 };
     char data_[max_length];
-
+    string status_str = "HTTP/1.1 200 OK\n";
     string request_method;
     string request_uri;
     string query_string;
@@ -40,6 +42,7 @@ private:
     string server_port;
     string remote_addr;
     string remote_port;
+    string exec_command;
 
     void do_read() {
         auto self(shared_from_this());
@@ -54,16 +57,44 @@ private:
 
     void do_write(std::size_t length) {
         auto self(shared_from_this());
-        boost::asio::async_write(socket_, boost::asio::buffer(data_, length),
+        boost::asio::async_write(socket_, boost::asio::buffer(status_str, status_str.length()),
                                  [this, self](boost::system::error_code ec, std::size_t /*length*/) {
                                      if (!ec) {
-                                         do_read();
+                                         io_context.notify_fork(boost::asio::io_context::fork_prepare);
+                                         int status;
+                                         pid_t pid = fork();
+                                         while (pid < 0) {
+                                             wait(&status);
+                                             pid = fork();
+                                         }
+                                         //  child
+                                         if (pid == 0) {
+                                             io_context.notify_fork(boost::asio::io_context::fork_child);
+
+                                             set_env();
+                                             dup2(socket_.native_handle(), STDIN_FILENO);
+                                             dup2(socket_.native_handle(), STDOUT_FILENO);
+                                             dup2(socket_.native_handle(), STDERR_FILENO);
+                                             socket_.close();
+
+                                             if (execlp(exec_command.c_str(), exec_command.c_str(), NULL) < 0) {
+                                                 cout << "Content-type:text/html\r\n\r\n<h1>exec failed</h1>";
+                                                 fflush(stdout);
+                                             }
+
+                                         }
+                                         // parent process
+                                         else {
+                                             signal(SIGCHLD, SIG_IGN);
+                                             io_context.notify_fork(boost::asio::io_context::fork_parent);
+                                             socket_.close();
+                                         }
                                      }
                                  });
     }
 
     void parse_request() {
-        cout << data_ << endl;
+        // cout << data_ << endl;
         string request = string(data_);
         stringstream request_ss(request);
         string header;
@@ -72,12 +103,13 @@ private:
         string request_uri_line;
         header_ss >> request_method >> request_uri_line >> server_protocol;
         stringstream request_uri_ss(request_uri_line);
-        getline(request_uri_ss, request_uri);
+        // cout<<request_uri_line<<endl;
+        getline(request_uri_ss, request_uri, '?');
         getline(request_uri_ss, query_string);
-        
+
         string header_host;
         getline(request_ss, header_host);
-        stringstream host_ss(header);
+        stringstream host_ss(header_host);
         string tmp;
         host_ss >> tmp >> http_host;
 
@@ -85,16 +117,29 @@ private:
         server_port = to_string(socket_.local_endpoint().port());
         remote_addr = socket_.remote_endpoint().address().to_string();
         remote_port = to_string(socket_.remote_endpoint().port());
-        
-        cout << "request_method: " << request_method << endl;
-        cout << "request_uri: " << request_uri << endl;
-        cout << "query_string: " << query_string << endl;
-        cout << "server_protocol: " << server_protocol << endl;
-        cout << "http_host: " << http_host << endl;
-        cout << "server_addr: " << server_addr << endl;
-        cout << "server_port: " << server_port << endl;
-        cout << "remote_addr: " << remote_addr << endl;
-        cout << "remote_port: " << remote_port << endl;
+        exec_command = boost::filesystem::current_path().string() + request_uri;
+        cout<<exec_command<<endl;
+        cout << "REQUEST_METHOD: " << request_method << endl;
+        cout << "REQUEST_URI: " << request_uri << endl;
+        cout << "QUERY_STRING: " << query_string << endl;
+        cout << "SERVER_PROTOCOL: " << server_protocol << endl;
+        cout << "HTTP_HOST: " << http_host << endl;
+        cout << "SERVER_ADDR: " << server_addr << endl;
+        cout << "SERVER_PORT: " << server_port << endl;
+        cout << "REMOTE_ADDR: " << remote_addr << endl;
+        cout << "REMOTE_PORT: " << remote_port << endl;
+    }
+
+    void set_env() {
+        setenv("REQUEST_METHOD", request_method.c_str(), 1);
+        setenv("REQUEST_URI", request_uri.c_str(), 1);
+        setenv("QUERY_STRING", query_string.c_str(), 1);
+        setenv("SERVER_PROTOCOL", server_protocol.c_str(), 1);
+        setenv("HTTP_HOST", http_host.c_str(), 1);
+        setenv("SERVER_ADDR", server_addr.c_str(), 1);
+        setenv("SERVER_PORT", server_port.c_str(), 1);
+        setenv("REMOTE_ADDR", remote_addr.c_str(), 1);
+        setenv("REMOTE_PORT", remote_port.c_str(), 1);
     }
 };
 
