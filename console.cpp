@@ -61,13 +61,14 @@ private:
         socket_.async_read_some(boost::asio::buffer(data_, max_length),
                                 [this, self](boost::system::error_code ec, std::size_t length) {
                                     if (!ec) {
-                                      cout<<"do_read!!!!!!!!!!!!!!!!!!!"<<endl;
+                                    //   cout<<"do_read!!!!!!!!!!!!!!!!!!!"<<endl;
                                         string res = string(data_);
-                                        cout << res << endl;
+                                        // cout << res << endl;
                                         memset(data_, '\0', max_length);
                                         output_shell(res);
                                         if (res.find("%") != std::string::npos) {
-                                            cout << "find %!!!!!!!!!!!!!!!!!!!!!!" << endl;
+                                            // cout << "find %!!!!!!!!!!!!!!!!!!!!!!" << endl;
+                                            do_write();
                                         } else {
                                             do_read();
                                         }
@@ -75,12 +76,18 @@ private:
                                 });
     }
 
-    void do_write(std::size_t length) {
+    void do_write() {
         auto self(shared_from_this());
-        boost::asio::async_write(socket_, boost::asio::buffer(data_, length),
+        string c_command = commands.front();
+        commands.pop();
+        char output[max_length];
+        strcpy(output, c_command.c_str());
+        output_command(c_command);
+
+        boost::asio::async_write(socket_, boost::asio::buffer(output, strlen(output)),
                                  [this, self](boost::system::error_code ec, std::size_t /*length*/) {
                                      if (!ec) {
-                                         io_context.notify_fork(boost::asio::io_context::fork_prepare);
+                                        do_read();
                                      }
                                  });
     }
@@ -99,10 +106,14 @@ private:
 
     void output_shell(string str) {
         escape(str);
-        // cout << "<script>document.getElementById(\'s" + index_ + "\').innerHTML += \'" + str + "\';</script>&NewLine;";
-        cout<<str<<endl;
+        cout << "<script>document.getElementById(\'s" + index_ + "\').innerHTML += \'" + str + "\';</script>&NewLine;";
     }
 
+    void output_command(string str){
+        escape(str);
+        cout << "<script>document.getElementById(\'s" + index_ + "\').innerHTML += \'<b>" + str + "</b>\';</script>" << flush;
+
+    }
     void escape(string &str) {
         boost::replace_all(str, "&", "&amp;");
         boost::replace_all(str, "\"", "&quot;");
@@ -116,8 +127,7 @@ private:
 
 vector<tuple<string, string, string>> parse_query_string() {
     string query_string = string(getenv("QUERY_STRING"));
-    cout << query_string << endl
-         << endl;
+    // cout << query_string << endl
     stringstream ss(query_string);
     string token;
     // 0: hostname; 1: port; 2:file
@@ -189,14 +199,14 @@ void print_html(vector<tuple<string, string, string>> clients) {
       <thead>\
         <tr>";
     for (int i = 0; i < clients.size(); i++) {
-        cout << "           <th scope=\"col\">" << get<0>(clients[i]) << ":" << get<1>(clients[i]) << "</th>";
+        cout << "<th scope=\"col\">" << get<0>(clients[i]) << ":" << get<1>(clients[i]) << "</th>";
     }
     cout << "         </tr>\
                 </thead>\
                 <tbody>\
                     <tr>";
     for (int i = 0; i < clients.size(); i++) {
-        cout << "           <td><pre id=\"s" + to_string(i) + "\" class=\"mb-0\"></pre></td>";
+        cout << "<td><pre id=\"s" + to_string(i) + "\" class=\"mb-0\"></pre></td>";
     }
     cout << "         </tr>\
                 </tbody>\
@@ -209,15 +219,15 @@ void connect_to_server(vector<tuple<string, string, string>> clients) {
     for (int i = 0; i < clients.size(); ++i) {
         tcp::resolver::query query(get<0>(clients[i]), get<1>(clients[i]));
         tcp::socket socket(io_context);
-        make_shared<session>(move(socket), move(query), get<2>(clients[i]), to_string(i))->start();
+        make_shared<session>(move(socket), move(query), to_string(i), get<2>(clients[i]))->start();
     }
 }
 
 int main() {
     try {
         vector<tuple<string, string, string>> clients = parse_query_string();
-        // print_html(clients);
         connect_to_server(clients);
+        print_html(clients);
         io_context.run();
     } catch (exception &e) {
         cerr << e.what() << endl;
